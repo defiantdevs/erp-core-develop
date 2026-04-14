@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────
 # Stage 1: Base image with system dependencies
 # ──────────────────────────────────────────────────────────────
-ARG PYTHON_VERSION=3.11
+ARG PYTHON_VERSION=3.14
 ARG DEBIAN_BASE=bookworm
 FROM python:${PYTHON_VERSION}-slim-${DEBIAN_BASE} AS base
 
@@ -119,8 +119,15 @@ RUN bench init \
     && echo "{}" > sites/common_site_config.json
 
 # Copy ERPNext app source and install it
+# Initialize a temporary git repo so bench get-app accepts the local path
 COPY --chown=frappe:frappe . /home/frappe/frappe-bench/apps/erpnext
-RUN cd /home/frappe/frappe-bench \
+RUN cd /home/frappe/frappe-bench/apps/erpnext \
+    && git init \
+    && git add -A \
+    && git config user.email "build@docker" \
+    && git config user.name "Docker Build" \
+    && git commit -m "build" \
+    && cd /home/frappe/frappe-bench \
     && bench get-app --skip-assets --resolve-deps file:///home/frappe/frappe-bench/apps/erpnext \
     && bench build --production \
     && find apps -mindepth 1 -path "*/.git" | xargs rm -fr

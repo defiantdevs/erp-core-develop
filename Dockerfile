@@ -11,7 +11,7 @@ COPY resources/nginx/security_headers.conf /etc/nginx/snippets/security_headers.
 
 ARG WKHTMLTOPDF_VERSION=0.12.6.1-3
 ARG WKHTMLTOPDF_DISTRO=bookworm
-ARG NODE_VERSION=20.18.0
+ARG NODE_VERSION=24.13.0
 ENV NVM_DIR=/home/frappe/.nvm
 ENV PATH=${NVM_DIR}/versions/node/v${NODE_VERSION}/bin/:${PATH}
 
@@ -103,7 +103,7 @@ RUN apt-get update \
 
 USER frappe
 
-ARG FRAPPE_BRANCH=version-15
+ARG FRAPPE_BRANCH=develop
 ARG FRAPPE_PATH=https://github.com/frappe/frappe
 
 # Initialize bench with Frappe

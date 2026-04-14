@@ -122,7 +122,7 @@ RUN bench init \
 COPY --chown=frappe:frappe . /home/frappe/frappe-bench/apps/erpnext
 
 RUN cd /home/frappe/frappe-bench \
-    && echo "erpnext" >> sites/apps.txt \
+    && printf '\nerpnext\n' >> sites/apps.txt \
     && ./env/bin/pip install --no-cache-dir -e apps/erpnext \
     && yarn --cwd apps/erpnext \
     && bench build --production \

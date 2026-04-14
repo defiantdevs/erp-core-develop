@@ -1,29 +1,55 @@
+x-customizable-image: &customizable_image
+  image: ${CUSTOM_IMAGE:-erpnext}:${CUSTOM_TAG:-latest}
+  build:
+    context: .
+    target: backend
+
+x-backend-defaults: &backend-defaults
+  <<: *customizable_image
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+
 x-common-env: &common-env
-  FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-erpnext.localhost}
   DB_HOST: mariadb
   DB_PORT: "3306"
   REDIS_CACHE: redis://redis-cache:6379
   REDIS_QUEUE: redis://redis-queue:6379
   SOCKETIO_PORT: "9000"
 
-x-backend-defaults: &backend-defaults
-  image: ${ERPNEXT_IMAGE:-erpnext}:${ERPNEXT_VERSION:-latest}
-  build:
-    context: .
-    target: backend
-  volumes:
-    - sites:/home/frappe/frappe-bench/sites
-  environment:
-    <<: *common-env
-
 services:
+  # ── Site Configurator (one-shot init) ─────────────────────
+  configurator:
+    <<: *backend-defaults
+    labels:
+      - "coolify.managed=true"
+      - "coolify.proxy=false"
+    restart: on-failure
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - >
+        ls -1 apps/erpnext > /dev/null 2>&1 || exit 0;
+        bench set-config -g db_host $$DB_HOST;
+        bench set-config -gp db_port $$DB_PORT;
+        bench set-config -g redis_cache $$REDIS_CACHE;
+        bench set-config -g redis_queue $$REDIS_QUEUE;
+        bench set-config -g redis_socketio redis://redis-queue:6379;
+    environment:
+      <<: *common-env
+    depends_on: {}
+
   # ── Frappe / ERPNext Backend ──────────────────────────────
   backend:
     <<: *backend-defaults
     labels:
       - "coolify.managed=true"
       - "coolify.proxy=false"
+    environment:
+      <<: *common-env
     depends_on:
+      configurator:
+        condition: service_completed_successfully
       mariadb:
         condition: service_healthy
       redis-cache:
@@ -31,66 +57,12 @@ services:
       redis-queue:
         condition: service_healthy
 
-  # ── Background Workers ────────────────────────────────────
-  worker-default:
-    <<: *backend-defaults
-    command: bench worker --queue default
-    labels:
-      - "coolify.managed=true"
-      - "coolify.proxy=false"
-    depends_on:
-      - backend
-
-  worker-short:
-    <<: *backend-defaults
-    command: bench worker --queue short
-    labels:
-      - "coolify.managed=true"
-      - "coolify.proxy=false"
-    depends_on:
-      - backend
-
-  worker-long:
-    <<: *backend-defaults
-    command: bench worker --queue long
-    labels:
-      - "coolify.managed=true"
-      - "coolify.proxy=false"
-    depends_on:
-      - backend
-
-  # ── Scheduler ─────────────────────────────────────────────
-  scheduler:
-    <<: *backend-defaults
-    command: bench schedule
-    labels:
-      - "coolify.managed=true"
-      - "coolify.proxy=false"
-    depends_on:
-      - backend
-
-  # ── WebSocket (real-time updates) ─────────────────────────
-  websocket:
-    <<: *backend-defaults
-    command: node /home/frappe/frappe-bench/apps/frappe/socketio.js
-    labels:
-      - "coolify.managed=true"
-      - "coolify.proxy=false"
-    ports:
-      - "${SOCKETIO_PORT:-9000}:9000"
-    depends_on:
-      - backend
-
   # ── Nginx Frontend ────────────────────────────────────────
   frontend:
-    image: ${ERPNEXT_IMAGE:-erpnext}-frontend:${ERPNEXT_VERSION:-latest}
-    build:
-      context: .
-      target: frontend
+    <<: *backend-defaults
+    command: nginx-entrypoint.sh
     ports:
-      - "${HTTP_PORT:-8080}:8080"
-    volumes:
-      - sites:/home/frappe/frappe-bench/sites
+      - "${HTTP_PORT:-8002}:8080"
     environment:
       BACKEND: backend:8000
       SOCKETIO: websocket:9000
@@ -98,9 +70,62 @@ services:
       UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
       UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
       UPSTREAM_REAL_IP_RECURSIVE: "off"
+      PROXY_READ_TIMEOUT: "120"
+      CLIENT_MAX_BODY_SIZE: "50m"
     depends_on:
       - backend
       - websocket
+
+  # ── WebSocket (real-time updates) ─────────────────────────
+  websocket:
+    <<: *backend-defaults
+    labels:
+      - "coolify.managed=true"
+      - "coolify.proxy=false"
+    command: node /home/frappe/frappe-bench/apps/frappe/socketio.js
+    environment:
+      <<: *common-env
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  # ── Background Workers ────────────────────────────────────
+  queue-short:
+    <<: *backend-defaults
+    labels:
+      - "coolify.managed=true"
+      - "coolify.proxy=false"
+    command: bench worker --queue short,default
+    environment:
+      <<: *common-env
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  queue-long:
+    <<: *backend-defaults
+    labels:
+      - "coolify.managed=true"
+      - "coolify.proxy=false"
+    command: bench worker --queue long,default,short
+    environment:
+      <<: *common-env
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  # ── Scheduler ─────────────────────────────────────────────
+  scheduler:
+    <<: *backend-defaults
+    labels:
+      - "coolify.managed=true"
+      - "coolify.proxy=false"
+    command: bench schedule
+    environment:
+      <<: *common-env
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
 
   # ── MariaDB ───────────────────────────────────────────────
   mariadb:
@@ -155,38 +180,18 @@ services:
       timeout: 3s
       retries: 3
 
-  # ── Site Configurator (one-shot init container) ───────────
-  configurator:
-    <<: *backend-defaults
-    labels:
-      - "coolify.managed=true"
-      - "coolify.proxy=false"
-    command: >
-      bash -c "
-        ls -1 apps/erpnext > /dev/null 2>&1 || exit 0;
-        bench set-config -g db_host mariadb;
-        bench set-config -gp db_port 3306;
-        bench set-config -g redis_cache redis://redis-cache:6379;
-        bench set-config -g redis_queue redis://redis-queue:6379;
-        bench set-config -g redis_socketio redis://redis-queue:6379;
-      "
-    restart: "no"
-    depends_on:
-      mariadb:
-        condition: service_healthy
-      redis-cache:
-        condition: service_healthy
-      redis-queue:
-        condition: service_healthy
-
   # ── Site Creator (one-shot — creates the site) ────────────
   create-site:
     <<: *backend-defaults
     labels:
       - "coolify.managed=true"
       - "coolify.proxy=false"
-    command: >
-      bash -c "
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - >
         wait-for-it -t 60 mariadb:3306;
         bench new-site ${SITE_NAME:-erpnext.localhost}
           --mariadb-root-password ${DB_ROOT_PASSWORD:-changeme}
@@ -194,11 +199,13 @@ services:
           --install-app erpnext
           --set-default
           || true;
-      "
-    restart: "no"
+    environment:
+      <<: *common-env
     depends_on:
       configurator:
         condition: service_completed_successfully
+      mariadb:
+        condition: service_healthy
 
 volumes:
   mariadb-data:

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:hub.docker.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/frappe/frappe_docker/main/resources/core/nginx/nginx-template.conf\" -o nginx-template.conf)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/frappe/frappe_docker/main/resources/core/nginx/nginx-entrypoint.sh\" -o nginx-entrypoint.sh)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/frappe/frappe_docker/main/resources/core/nginx/security_headers.conf\" -o security_headers.conf)",
+      "Bash(chmod +x nginx-entrypoint.sh)"
+    ]
+  }
+}

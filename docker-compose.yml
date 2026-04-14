@@ -1,0 +1,174 @@
+x-common-env: &common-env
+  FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-erpnext.localhost}
+  DB_HOST: mariadb
+  DB_PORT: "3306"
+  REDIS_CACHE: redis://redis-cache:6379
+  REDIS_QUEUE: redis://redis-queue:6379
+  SOCKETIO_PORT: "9000"
+
+x-backend-defaults: &backend-defaults
+  image: ${ERPNEXT_IMAGE:-erpnext}:${ERPNEXT_VERSION:-latest}
+  build:
+    context: .
+    target: backend
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+  environment:
+    <<: *common-env
+
+services:
+  # ── Frappe / ERPNext Backend ──────────────────────────────
+  backend:
+    <<: *backend-defaults
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+
+  # ── Background Workers ────────────────────────────────────
+  worker-default:
+    <<: *backend-defaults
+    command: bench worker --queue default
+    depends_on:
+      - backend
+
+  worker-short:
+    <<: *backend-defaults
+    command: bench worker --queue short
+    depends_on:
+      - backend
+
+  worker-long:
+    <<: *backend-defaults
+    command: bench worker --queue long
+    depends_on:
+      - backend
+
+  # ── Scheduler ─────────────────────────────────────────────
+  scheduler:
+    <<: *backend-defaults
+    command: bench schedule
+    depends_on:
+      - backend
+
+  # ── WebSocket (real-time updates) ─────────────────────────
+  websocket:
+    <<: *backend-defaults
+    command: node /home/frappe/frappe-bench/apps/frappe/socketio.js
+    ports:
+      - "${SOCKETIO_PORT:-9000}:9000"
+    depends_on:
+      - backend
+
+  # ── Nginx Frontend ────────────────────────────────────────
+  frontend:
+    image: ${ERPNEXT_IMAGE:-erpnext}-frontend:${ERPNEXT_VERSION:-latest}
+    build:
+      context: .
+      target: frontend
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:-erpnext.localhost}
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+    depends_on:
+      - backend
+      - websocket
+
+  # ── MariaDB ───────────────────────────────────────────────
+  mariadb:
+    image: mariadb:10.6
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${DB_NAME:-erpnext}
+      MYSQL_USER: ${DB_USER:-erpnext}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-erpnext}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Redis (cache) ─────────────────────────────────────────
+  redis-cache:
+    image: redis:7-alpine
+    volumes:
+      - redis-cache-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── Redis (queue) ─────────────────────────────────────────
+  redis-queue:
+    image: redis:7-alpine
+    volumes:
+      - redis-queue-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── Site Configurator (one-shot init container) ───────────
+  configurator:
+    <<: *backend-defaults
+    command: >
+      bash -c "
+        ls -1 apps/erpnext > /dev/null 2>&1 || exit 0;
+        bench set-config -g db_host mariadb;
+        bench set-config -gp db_port 3306;
+        bench set-config -g redis_cache redis://redis-cache:6379;
+        bench set-config -g redis_queue redis://redis-queue:6379;
+        bench set-config -g redis_socketio redis://redis-queue:6379;
+      "
+    restart: "no"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+
+  # ── Site Creator (one-shot — creates the site) ────────────
+  create-site:
+    <<: *backend-defaults
+    command: >
+      bash -c "
+        wait-for-it -t 60 mariadb:3306;
+        bench new-site ${SITE_NAME:-erpnext.localhost}
+          --mariadb-root-password ${DB_ROOT_PASSWORD:-changeme}
+          --admin-password ${ADMIN_PASSWORD:-admin}
+          --install-app erpnext
+          --set-default
+          || true;
+      "
+    restart: "no"
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+volumes:
+  mariadb-data:
+  redis-cache-data:
+  redis-queue-data:
+  sites:

@@ -71,7 +71,7 @@ RUN useradd -ms /bin/bash frappe \
     && chmod 644 /templates/nginx/frappe.conf.template
 
 # ──────────────────────────────────────────────────────────────
-# Stage 2: Builder — install Frappe + ERPNext
+# Stage 2: Builder — install Frappe + ERPNext from source
 # ──────────────────────────────────────────────────────────────
 FROM base AS builder
 
@@ -104,9 +104,9 @@ RUN apt-get update \
 USER frappe
 
 ARG FRAPPE_BRANCH=develop
-ARG FRAPPE_PATH=https://github.com/frappe/frappe
+ARG FRAPPE_PATH=https://github.com/defiantdevs/frappe
 
-# Initialize bench with Frappe
+# Step 1: Initialize bench with Frappe framework
 RUN bench init \
     --frappe-branch=${FRAPPE_BRANCH} \
     --frappe-path=${FRAPPE_PATH} \
@@ -118,17 +118,13 @@ RUN bench init \
     && cd /home/frappe/frappe-bench \
     && echo "{}" > sites/common_site_config.json
 
-# Copy ERPNext app source and install it
-# Initialize a temporary git repo so bench get-app accepts the local path
+# Step 2: Copy ERPNext source and install directly (bypass bench get-app)
 COPY --chown=frappe:frappe . /home/frappe/frappe-bench/apps/erpnext
-RUN cd /home/frappe/frappe-bench/apps/erpnext \
-    && git init \
-    && git add -A \
-    && git config user.email "build@docker" \
-    && git config user.name "Docker Build" \
-    && git commit -m "build" \
-    && cd /home/frappe/frappe-bench \
-    && bench get-app --skip-assets --resolve-deps file:///home/frappe/frappe-bench/apps/erpnext \
+
+RUN cd /home/frappe/frappe-bench \
+    && echo "erpnext" >> sites/apps.txt \
+    && ./env/bin/pip install --no-cache-dir -e apps/erpnext \
+    && yarn --cwd apps/erpnext \
     && bench build --production \
     && find apps -mindepth 1 -path "*/.git" | xargs rm -fr
 
